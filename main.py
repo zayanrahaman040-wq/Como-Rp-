@@ -2,7 +2,7 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 import os
-import random
+import asyncio
 from openai import OpenAI
 
 TOKEN = os.getenv("TOKEN")
@@ -40,6 +40,46 @@ TICKET_CATEGORIE = [
 ]
 
 ticket_counter = 0
+# Chi ha un ticket aperto: user_id -> channel_id
+ticket_aperti = {}
+
+# --- BOTTONI DENTRO IL TICKET ---
+class TicketButtons(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Claim", style=discord.ButtonStyle.green, emoji="✋")
+    async def claim(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.user.guild_permissions.manage_channels:
+            await interaction.response.send_message("❌ Solo lo Staff può claimmare!", ephemeral=True)
+            return
+        button.disabled = True
+        button.label = f"Claimato da {interaction.user.name}"
+        await interaction.response.send_message(f"✅ Ticket claimato da {interaction.user.mention}!")
+        await interaction.message.edit(view=self)
+
+    @discord.ui.button(label="Chiudi", style=discord.ButtonStyle.red, emoji="🔒")
+    async def chiudi(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Trova chi ha aperto questo ticket
+        user_id = None
+        for uid, cid in list(ticket_aperti.items()):
+            if cid == interaction.channel.id:
+                user_id = uid
+                break
+
+        # Può chiudere solo chi l'ha aperto o lo Staff
+        if interaction.user.id != user_id and not interaction.user.guild_permissions.manage_channels:
+            await interaction.response.send_message("❌ Solo tu o lo Staff potete chiudere!", ephemeral=True)
+            return
+
+        await interaction.response.send_message("🔒 Ticket chiuso! Cancello SOLO questo canale in 5 secondi...")
+        await asyncio.sleep(5)
+        if user_id in ticket_aperti:
+            del ticket_aperti[user_id]
+        try:
+            await interaction.channel.delete()
+        except:
+            pass
 
 class TicketSelect(discord.ui.Select):
     def __init__(self):
@@ -50,25 +90,36 @@ class TicketSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         global ticket_counter
+        user = interaction.user
+
+        # --- ANTI-SPAM: 1 TICKET APERTO ALLA VOLTA ---
+        if user.id in ticket_aperti:
+            canale_vecchio = interaction.guild.get_channel(ticket_aperti[user.id])
+            if canale_vecchio:
+                await interaction.response.send_message(f"❌ Hai già un ticket aperto! Vai in {canale_vecchio.mention} e chiudilo prima di aprirne un altro.", ephemeral=True)
+                return
+            else:
+                del ticket_aperti[user.id]
+
         ticket_counter += 1
         scelta = self.values[0]
         guild = interaction.guild
-        user = interaction.user
 
-        # Cerca o crea categoria TICKET
         categoria = discord.utils.get(guild.categories, name="🎫 ─ TICKET")
         if not categoria:
             categoria = await guild.create_category("🎫 ─ TICKET")
 
         nome_canale = f"ticket-{user.name}-{ticket_counter}".lower().replace(" ", "-")
-        # Permessi: solo tu + staff vedono
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
             user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_messages=True),
             guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True)
         }
         canale = await guild.create_text_channel(nome_canale, category=categoria, overwrites=overwrites)
-        await canale.send(f"👋 Ciao {user.mention}! Hai aperto un ticket per **{scelta}**\n\n**Scrivi qui:**\n- Nome Roblox:\n- Spiega il problema:\n- Foto / video se hai\n\nUno staffer ti risponderà presto!")
+        ticket_aperti[user.id] = canale.id
+
+        embed = discord.Embed(title=f"🎫 Ticket - {scelta}", description=f"Ciao {user.mention}!\n\n**Categoria:** {scelta}\n\n**Scrivi qui:**\n- Nome Roblox:\n- Spiega il problema:\n- Foto / video se hai\n\nUno staffer ti risponderà presto!", color=0x3498DB)
+        await canale.send(embed=embed, view=TicketButtons())
         await interaction.response.send_message(f"✅ Ticket creato! Vai in {canale.mention}", ephemeral=True)
 
 class TicketView(discord.ui.View):
@@ -81,6 +132,13 @@ async def on_ready():
     print(f"Bot online {bot.user}")
     await bot.tree.sync()
     print("Comandi /ticket e /ai pronti")
+
+@bot.event
+async def on_guild_channel_delete(channel):
+    # Se canale ticket cancellato a mano, libera utente -> può riaprire
+    for uid, cid in list(ticket_aperti.items()):
+        if cid == channel.id:
+            del ticket_aperti[uid]
 
 @bot.tree.command(name="ticket", description="Apri il pannello ticket")
 async def ticket(interaction: discord.Interaction):
