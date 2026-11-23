@@ -9,13 +9,14 @@ TOKEN = os.getenv("TOKEN")
 OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 client_ai = OpenAI(api_key=OPENAI_KEY)
 
+LOG_CHANNEL_ID = 1574465040336035940  # <-- il tuo canale log ticket
+
 intents = discord.Intents.default()
 intents.guilds = True
 intents.members = True
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# --- 20 CATEGORIE TICKET ---
 TICKET_CATEGORIE = [
     ("Assistenza Generale", "Hai un problema in game? Apri qui!", "🎧"),
     ("Assistenza Game", "Problemi dentro il gioco, lag, bug RP", "🎮"),
@@ -40,10 +41,15 @@ TICKET_CATEGORIE = [
 ]
 
 ticket_counter = 0
-# Chi ha un ticket aperto: user_id -> channel_id
 ticket_aperti = {}
+# Per ricordare categoria e chi ha aperto: channel_id -> info
+ticket_info = {}
 
-# --- BOTTONI DENTRO IL TICKET ---
+async def manda_log(guild, embed):
+    canale_log = guild.get_channel(LOG_CHANNEL_ID)
+    if canale_log:
+        await canale_log.send(embed=embed)
+
 class TicketButtons(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -57,25 +63,33 @@ class TicketButtons(discord.ui.View):
         button.label = f"Claimato da {interaction.user.name}"
         await interaction.response.send_message(f"✅ Ticket claimato da {interaction.user.mention}!")
         await interaction.message.edit(view=self)
+        # LOG CLAIM
+        info = ticket_info.get(interaction.channel.id, {})
+        embed = discord.Embed(title="✋ Ticket Claimato", description=f"**Canale:** {interaction.channel.name}\n**Claimato da:** {interaction.user.mention}\n**Aperto da:** <@{info.get('user_id')}>\n**Categoria:** {info.get('categoria')}", color=0x2ECC71)
+        await manda_log(interaction.guild, embed)
 
     @discord.ui.button(label="Chiudi", style=discord.ButtonStyle.red, emoji="🔒")
     async def chiudi(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Trova chi ha aperto questo ticket
         user_id = None
         for uid, cid in list(ticket_aperti.items()):
             if cid == interaction.channel.id:
                 user_id = uid
                 break
-
-        # Può chiudere solo chi l'ha aperto o lo Staff
         if interaction.user.id != user_id and not interaction.user.guild_permissions.manage_channels:
             await interaction.response.send_message("❌ Solo tu o lo Staff potete chiudere!", ephemeral=True)
             return
+
+        # LOG CHIUSURA - prima di cancellare
+        info = ticket_info.get(interaction.channel.id, {})
+        embed = discord.Embed(title="🔒 Ticket Chiuso", description=f"**Canale:** {interaction.channel.name}\n**Chiuso da:** {interaction.user.mention}\n**Aperto da:** <@{info.get('user_id')}>\n**Categoria:** {info.get('categoria')}", color=0xE74C3C)
+        await manda_log(interaction.guild, embed)
 
         await interaction.response.send_message("🔒 Ticket chiuso! Cancello SOLO questo canale in 5 secondi...")
         await asyncio.sleep(5)
         if user_id in ticket_aperti:
             del ticket_aperti[user_id]
+        if interaction.channel.id in ticket_info:
+            del ticket_info[interaction.channel.id]
         try:
             await interaction.channel.delete()
         except:
@@ -91,8 +105,6 @@ class TicketSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         global ticket_counter
         user = interaction.user
-
-        # --- ANTI-SPAM: 1 TICKET APERTO ALLA VOLTA ---
         if user.id in ticket_aperti:
             canale_vecchio = interaction.guild.get_channel(ticket_aperti[user.id])
             if canale_vecchio:
@@ -104,11 +116,9 @@ class TicketSelect(discord.ui.Select):
         ticket_counter += 1
         scelta = self.values[0]
         guild = interaction.guild
-
         categoria = discord.utils.get(guild.categories, name="🎫 ─ TICKET")
         if not categoria:
             categoria = await guild.create_category("🎫 ─ TICKET")
-
         nome_canale = f"ticket-{user.name}-{ticket_counter}".lower().replace(" ", "-")
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
@@ -117,10 +127,15 @@ class TicketSelect(discord.ui.Select):
         }
         canale = await guild.create_text_channel(nome_canale, category=categoria, overwrites=overwrites)
         ticket_aperti[user.id] = canale.id
+        ticket_info[canale.id] = {"user_id": user.id, "categoria": scelta}
 
         embed = discord.Embed(title=f"🎫 Ticket - {scelta}", description=f"Ciao {user.mention}!\n\n**Categoria:** {scelta}\n\n**Scrivi qui:**\n- Nome Roblox:\n- Spiega il problema:\n- Foto / video se hai\n\nUno staffer ti risponderà presto!", color=0x3498DB)
         await canale.send(embed=embed, view=TicketButtons())
         await interaction.response.send_message(f"✅ Ticket creato! Vai in {canale.mention}", ephemeral=True)
+
+        # LOG APERTURA
+        embed_log = discord.Embed(title="🎫 Ticket Aperto", description=f"**Canale:** {canale.mention}\n**Aperto da:** {user.mention} ({user.id})\n**Categoria:** {scelta}", color=0x3498DB)
+        await manda_log(guild, embed_log)
 
 class TicketView(discord.ui.View):
     def __init__(self):
@@ -135,17 +150,17 @@ async def on_ready():
 
 @bot.event
 async def on_guild_channel_delete(channel):
-    # Se canale ticket cancellato a mano, libera utente -> può riaprire
     for uid, cid in list(ticket_aperti.items()):
         if cid == channel.id:
             del ticket_aperti[uid]
+    if channel.id in ticket_info:
+        del ticket_info[channel.id]
 
 @bot.tree.command(name="ticket", description="Apri il pannello ticket")
 async def ticket(interaction: discord.Interaction):
     embed = discord.Embed(title="🎫 Apri un Ticket - 118 RP", description="Clicca in basso e scegli la categoria!\n\nHai 20 categorie: Assistenza, CEO, Medico, Partnership, Segnalazioni e altro.", color=0x3498DB)
     await interaction.response.send_message(embed=embed, view=TicketView())
 
-# --- AI COME CHATGPT ---
 @bot.tree.command(name="ai", description="Chiedi qualsiasi cosa all'AI")
 @app_commands.describe(domanda="Scrivi la tua domanda")
 async def ai(interaction: discord.Interaction, domanda: str):
