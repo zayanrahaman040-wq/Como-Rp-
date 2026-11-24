@@ -1,181 +1,244 @@
+# ================= MAIN.PY - CASTREZZATO RP BOT =================
+import os
 import discord
 from discord.ext import commands
 from discord import app_commands
-import os
+from discord.ui import View, Button, Modal, TextInput
 import asyncio
-from openai import OpenAI
 
-TOKEN = os.getenv("TOKEN")
-OPENAI_KEY = os.getenv("OPENAI_API_KEY")
-client_ai = OpenAI(api_key=OPENAI_KEY)
+# ---------- CONFIG ----------
+TOKEN = os.getenv("DISCORD_TOKEN")  # Metti il token nelle variabili d'ambiente
+OPENAI_KEY = os.getenv("OPENAI_KEY")  # Per /ai se lo usi
+CHECK_PASSWORD = os.getenv("CHECK_PASSWORD", "INSERISCI_QUI_LA_TUA_PASSWORD")
+TICKET_PASSWORD = os.getenv("TICKET_PASSWORD", "INSERISCI_QUI_LA_TUA_PASSWORD")
+AI_PASSWORD = os.getenv("AI_PASSWORD", "INSERISCI_QUI_LA_TUA_PASSWORD")
 
-LOG_CHANNEL_ID = 1574465040336035940  # <-- il tuo canale log ticket
+# ID TUOI - CAMBIALI
+ZAYAN_ID = 0  # Metti il tuo ID Discord qui
+GUILD_ID = 0  # Metti ID server Castrezzato RP (opzionale)
+TICKET_CATEGORY_ID = 0  # ID categoria dove aprire i ticket
+STAFF_ROLE_ID = 0  # ID ruolo Staff
 
-intents = discord.Intents.default()
-intents.guilds = True
-intents.members = True
-intents.message_content = True
+intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-TICKET_CATEGORIE = [
-    ("Assistenza Generale", "Hai un problema in game? Apri qui!", "🎧"),
-    ("Assistenza Game", "Problemi dentro il gioco, lag, bug RP", "🎮"),
-    ("Richiesta CEO", "Vuoi parlare con il CEO? Apri qui!", "👑"),
-    ("Richiesta Fondatore", "Vuoi parlare con il Fondatore?", "🏛️"),
-    ("Richiesta Medico", "Vuoi parlare con il Medico / Capo Medico?", "🩺"),
-    ("Partnership", "Vuoi fare Partnership con 118 RP?", "🤝"),
-    ("Segnalazione Utente", "Segnala un utente per FailRP o troll", "🚨"),
-    ("Segnalazione Bug", "Hai trovato un bug? Segnalalo qui", "🐛"),
-    ("Richiesta Sban", "Sei stato bannato? Richiedi sban", "🔓"),
-    ("Richiesta Staff", "Vuoi entrare nello Staff?", "🛡️"),
-    ("Richiesta Ruolo", "Vuoi un ruolo o cambio ruolo?", "🎖️"),
-    ("Problema Pagamento", "Problemi con pagamenti / donazioni", "💳"),
-    ("Problema Account", "Problemi con account Roblox / Discord", "👤"),
-    ("Problema Voice / Lag", "Non senti in voice? Lag?", "🔊"),
-    ("Denuncia FailRP", "Denuncia FailRP con prove", "⚖️"),
-    ("Richiesta Rimborso", "Hai perso oggetti per bug? Richiedi rimborso", "💰"),
-    ("Idea / Suggerimento", "Hai un'idea per migliorare il server?", "💡"),
-    ("Richiesta Evento", "Vuoi proporre un evento RP?", "🎉"),
-    ("Richiesta Clan / Gang", "Vuoi creare una gang / clan?", "👥"),
-    ("Altro / Altro Problema", "Altro problema non elencato", "❓"),
-]
-
-ticket_counter = 0
-ticket_aperti = {}
-# Per ricordare categoria e chi ha aperto: channel_id -> info
-ticket_info = {}
-
-async def manda_log(guild, embed):
-    canale_log = guild.get_channel(LOG_CHANNEL_ID)
-    if canale_log:
-        await canale_log.send(embed=embed)
-
-class TicketButtons(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="Claim", style=discord.ButtonStyle.green, emoji="✋")
-    async def claim(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not interaction.user.guild_permissions.manage_channels:
-            await interaction.response.send_message("❌ Solo lo Staff può claimmare!", ephemeral=True)
-            return
-        button.disabled = True
-        button.label = f"Claimato da {interaction.user.name}"
-        await interaction.response.send_message(f"✅ Ticket claimato da {interaction.user.mention}!")
-        await interaction.message.edit(view=self)
-        # LOG CLAIM
-        info = ticket_info.get(interaction.channel.id, {})
-        embed = discord.Embed(title="✋ Ticket Claimato", description=f"**Canale:** {interaction.channel.name}\n**Claimato da:** {interaction.user.mention}\n**Aperto da:** <@{info.get('user_id')}>\n**Categoria:** {info.get('categoria')}", color=0x2ECC71)
-        await manda_log(interaction.guild, embed)
-
-    @discord.ui.button(label="Chiudi", style=discord.ButtonStyle.red, emoji="🔒")
-    async def chiudi(self, interaction: discord.Interaction, button: discord.ui.Button):
-        user_id = None
-        for uid, cid in list(ticket_aperti.items()):
-            if cid == interaction.channel.id:
-                user_id = uid
-                break
-        if interaction.user.id != user_id and not interaction.user.guild_permissions.manage_channels:
-            await interaction.response.send_message("❌ Solo tu o lo Staff potete chiudere!", ephemeral=True)
-            return
-
-        # LOG CHIUSURA - prima di cancellare
-        info = ticket_info.get(interaction.channel.id, {})
-        embed = discord.Embed(title="🔒 Ticket Chiuso", description=f"**Canale:** {interaction.channel.name}\n**Chiuso da:** {interaction.user.mention}\n**Aperto da:** <@{info.get('user_id')}>\n**Categoria:** {info.get('categoria')}", color=0xE74C3C)
-        await manda_log(interaction.guild, embed)
-
-        await interaction.response.send_message("🔒 Ticket chiuso! Cancello SOLO questo canale in 5 secondi...")
-        await asyncio.sleep(5)
-        if user_id in ticket_aperti:
-            del ticket_aperti[user_id]
-        if interaction.channel.id in ticket_info:
-            del ticket_info[interaction.channel.id]
-        try:
-            await interaction.channel.delete()
-        except:
-            pass
-
-class TicketSelect(discord.ui.Select):
-    def __init__(self):
-        options = []
-        for nome, desc, emoji in TICKET_CATEGORIE:
-            options.append(discord.SelectOption(label=nome, description=desc[:100], emoji=emoji, value=nome))
-        super().__init__(placeholder="Clicca e scegli la categoria ticket...", min_values=1, max_values=1, options=options)
-
-    async def callback(self, interaction: discord.Interaction):
-        global ticket_counter
-        user = interaction.user
-        if user.id in ticket_aperti:
-            canale_vecchio = interaction.guild.get_channel(ticket_aperti[user.id])
-            if canale_vecchio:
-                await interaction.response.send_message(f"❌ Hai già un ticket aperto! Vai in {canale_vecchio.mention} e chiudilo prima di aprirne un altro.", ephemeral=True)
-                return
-            else:
-                del ticket_aperti[user.id]
-
-        ticket_counter += 1
-        scelta = self.values[0]
-        guild = interaction.guild
-        categoria = discord.utils.get(guild.categories, name="🎫 ─ TICKET")
-        if not categoria:
-            categoria = await guild.create_category("🎫 ─ TICKET")
-        nome_canale = f"ticket-{user.name}-{ticket_counter}".lower().replace(" ", "-")
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_messages=True),
-            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True)
-        }
-        canale = await guild.create_text_channel(nome_canale, category=categoria, overwrites=overwrites)
-        ticket_aperti[user.id] = canale.id
-        ticket_info[canale.id] = {"user_id": user.id, "categoria": scelta}
-
-        embed = discord.Embed(title=f"🎫 Ticket - {scelta}", description=f"Ciao {user.mention}!\n\n**Categoria:** {scelta}\n\n**Scrivi qui:**\n- Nome Roblox:\n- Spiega il problema:\n- Foto / video se hai\n\nUno staffer ti risponderà presto!", color=0x3498DB)
-        await canale.send(embed=embed, view=TicketButtons())
-        await interaction.response.send_message(f"✅ Ticket creato! Vai in {canale.mention}", ephemeral=True)
-
-        # LOG APERTURA
-        embed_log = discord.Embed(title="🎫 Ticket Aperto", description=f"**Canale:** {canale.mention}\n**Aperto da:** {user.mention} ({user.id})\n**Categoria:** {scelta}", color=0x3498DB)
-        await manda_log(guild, embed_log)
-
-class TicketView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-        self.add_item(TicketSelect())
-
+# ================= ON READY =================
 @bot.event
 async def on_ready():
-    print(f"Bot online {bot.user}")
-    await bot.tree.sync()
-    print("Comandi /ticket e /ai pronti")
+    print(f"✅ Bot online come {bot.user}")
+    try:
+        synced = await bot.tree.sync()
+        print(f"✅ Sincronizzati {len(synced)} comandi slash")
+    except Exception as e:
+        print(f"❌ Errore sync: {e}")
 
-@bot.event
-async def on_guild_channel_delete(channel):
-    for uid, cid in list(ticket_aperti.items()):
-        if cid == channel.id:
-            del ticket_aperti[uid]
-    if channel.id in ticket_info:
-        del ticket_info[channel.id]
+# ================= TICKET =================
+class TicketModal(Modal, title="Apri un Ticket"):
+    motivo = TextInput(label="Motivo del ticket", placeholder="Scrivi il motivo...", max_length=200)
+    dettagli = TextInput(label="Dettagli", placeholder="Spiega bene il problema...", style=discord.TextStyle.paragraph, max_length=1000)
 
-@bot.tree.command(name="ticket", description="Apri il pannello ticket")
-async def ticket(interaction: discord.Interaction):
-    embed = discord.Embed(title="🎫 Apri un Ticket - 118 RP", description="Clicca in basso e scegli la categoria!\n\nHai 20 categorie: Assistenza, CEO, Medico, Partnership, Segnalazioni e altro.", color=0x3498DB)
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        category = guild.get_channel(TICKET_CATEGORY_ID) if TICKET_CATEGORY_ID != 0 else None
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+        }
+        if STAFF_ROLE_ID != 0:
+            role = guild.get_role(STAFF_ROLE_ID)
+            if role:
+                overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+
+        channel = await guild.create_text_channel(
+            name=f"ticket-{interaction.user.name}",
+            category=category,
+            overwrites=overwrites
+        )
+
+        embed = discord.Embed(
+            title=f"🎫 Ticket di {interaction.user.display_name}",
+            description=f"**Motivo:** {self.motivo.value}\n\n**Dettagli:**\n{self.dettagli.value}",
+            color=discord.Color.blue()
+        )
+        embed.set_footer(text="Castrezzato RP | Ticket System")
+        await channel.send(f"<@{interaction.user.id}>", embed=embed, view=CloseTicketView())
+        await interaction.response.send_message(f"✅ Ticket aperto: {channel.mention}", ephemeral=True)
+
+class CloseTicketView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="🔒 Chiudi Ticket", style=discord.ButtonStyle.red, custom_id="close_ticket")
+    async def close_btn(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.send_message("🔒 Ticket in chiusura tra 5 secondi...", ephemeral=False)
+        await asyncio.sleep(5)
+        await interaction.channel.delete()
+
+class TicketView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="🎫 Apri Ticket", style=discord.ButtonStyle.blurple, custom_id="open_ticket")
+    async def open_btn(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.send_modal(TicketModal())
+
+@bot.tree.command(name="ticket", description="Manda il pannello ticket")
+@app_commands.describe(password="Password personalizzata di Zayan")
+async def ticket_cmd(interaction: discord.Interaction, password: str):
+    if password != TICKET_PASSWORD:
+        await interaction.response.send_message("❌ Password errata!", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title="🎫 TICKET - CASTREZZATO RP",
+        description=(
+            "Hai bisogno di aiuto?\n\n"
+            "• Segnala un player\n"
+            "• Fai una domanda allo Staff\n"
+            "• Segnala un bug\n"
+            "• Richiedi supporto\n\n"
+            "Premi il bottone qui sotto per aprire un ticket.\n"
+            "Lo Staff ti risponderà il prima possibile."
+        ),
+        color=discord.Color.blurple()
+    )
     await interaction.response.send_message(embed=embed, view=TicketView())
 
-@bot.tree.command(name="ai", description="Chiedi qualsiasi cosa all'AI")
-@app_commands.describe(domanda="Scrivi la tua domanda")
-async def ai(interaction: discord.Interaction, domanda: str):
-    await interaction.response.defer()
-    try:
-        resp = client_ai.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "Sei l'AI di 118 RP, un server Roblox RP italiano. Rispondi in italiano, corto, simpatico e utile. Aiuti con RP, regole, ticket, staff."},
-                {"role": "user", "content": domanda}
-            ]
-        )
-        risposta = resp.choices[0].message.content
-        await interaction.followup.send(f"🤖 **Tu:** {domanda}\n\n{risposta[:1900]}")
-    except Exception as e:
-        await interaction.followup.send(f"❌ Errore AI: {e}\nControlla OPENAI_API_KEY su Railway!")
+# ================= AI =================
+@bot.tree.command(name="ai", description="Chiedi qualcosa all'AI")
+@app_commands.describe(password="Password personalizzata di Zayan", domanda="Cosa vuoi chiedere?")
+async def ai_cmd(interaction: discord.Interaction, password: str, domanda: str):
+    if password != AI_PASSWORD:
+        await interaction.response.send_message("❌ Password errata!", ephemeral=True)
+        return
 
-bot.run(TOKEN)
+    await interaction.response.defer()
+
+    # Se hai OpenAI / altra AI collegala qui
+    # Esempio semplice senza API - togli se usi OpenAI
+    risposta = (
+        f"🤖 **Hai chiesto:** {domanda}\n\n"
+        f"Questa è la risposta dell'AI di Castrezzato RP.\n"
+        f"Collega qui la tua API per risposte vere e intelligenti!"
+    )
+
+    # Se usi OpenAI, decommenta questo:
+    # import openai
+    # client = openai.OpenAI(api_key=OPENAI_KEY)
+    # res = client.chat.completions.create(model="gpt-4o-mini", messages=[{"role":"user","content":domanda}])
+    # risposta = res.choices[0].message.content
+
+    embed = discord.Embed(title="🤖 AI - Castrezzato RP", description=risposta, color=discord.Color.purple())
+    await interaction.followup.send(embed=embed)
+
+# ================= CHECK ATTIVITÀ =================
+check_attivi = {}  # {message_id: {"presenti": set(), "nomi": {}, "channel_id": int}}
+
+class PresenteView(discord.ui.View):
+    def __init__(self, message_id):
+        super().__init__(timeout=None)
+        self.message_id = message_id
+
+    @discord.ui.button(label="✅ PRESENTE", style=discord.ButtonStyle.green, custom_id="btn_presente")
+    async def presente_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        data = check_attivi.get(self.message_id)
+        if not data:
+            await interaction.response.send_message("❌ Check finito o non trovato.", ephemeral=True)
+            return
+
+        user_id = interaction.user.id
+        if user_id in data["presenti"]:
+            await interaction.response.send_message("⚠️ Sei già registrato come presente!", ephemeral=True)
+            return
+
+        data["presenti"].add(user_id)
+        data["nomi"][user_id] = f"{interaction.user.display_name} (@{interaction.user.name})"
+        await interaction.response.send_message("✅ Registrato come **PRESENTE**!", ephemeral=True)
+
+@bot.tree.command(name="check", description="Avvia check attività Castrezzato RP Governo 3")
+@app_commands.describe(password="Password personalizzata di Zayan")
+async def check_cmd(interaction: discord.Interaction, password: str):
+    if password != CHECK_PASSWORD:
+        await interaction.response.send_message("❌ Password errata!", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title="📋 CHECK ATTIVITÀ - CASTREZZATO RP",
+        description=(
+            "**GOVERNO 3 - CONTROLLO PRESENZE**\n\n"
+            "Ciao a tutti! 👋\n\n"
+            "È iniziato il **Check Attività** per il **Governo 3 di Castrezzato RP**.\n"
+            "Questo check serve per vedere chi è ancora attivo nel governo e chi invece è inattivo.\n\n"
+            "**⚠️ IMPORTANTE - LEGGERE TUTTO:**\n"
+            "• Premete il bottone **✅ PRESENTE** qui sotto per confermare la vostra presenza\n"
+            "• Avete tempo fino a quando lo Staff dirà **STOP**\n"
+            "• Chi non premerà il bottone verrà considerato **INATTIVO**\n"
+            "• Chi è inattivo potrà essere rimosso dal Governo 3\n"
+            "• Non fate finta di essere presenti se non siete attivi davvero\n"
+            "• Un solo click a testa, non si può togliere\n\n"
+            "**📌 Se siete in vacanza / assenti, avvisate in DM uno Staff.**\n\n"
+            "Grazie a tutti per la collaborazione! 🙏\n"
+            "**- Direzione Governo 3 - Castrezzato RP**"
+        ),
+        color=discord.Color.blue()
+    )
+    embed.set_footer(text="Castrezzato RP | Governo 3 | Check Attività")
+
+    await interaction.response.send_message("✅ Check avviato!", ephemeral=True)
+    msg = await interaction.channel.send(embed=embed, view=PresenteView(0))
+
+    check_attivi[msg.id] = {
+        "presenti": set(),
+        "nomi": {},
+        "channel_id": interaction.channel_id,
+        "titolo": "Governo 3"
+    }
+    await msg.edit(view=PresenteView(msg.id))
+
+@bot.tree.command(name="stopcheck", description="Ferma il check e manda la lista dei presenti")
+@app_commands.describe(password="Password personalizzata di Zayan")
+async def stopcheck_cmd(interaction: discord.Interaction, password: str):
+    if password != CHECK_PASSWORD:
+        await interaction.response.send_message("❌ Password errata!", ephemeral=True)
+        return
+
+    if not check_attivi:
+        await interaction.response.send_message("❌ Nessun check attivo!", ephemeral=True)
+        return
+
+    last_id = list(check_attivi.keys())[-1]
+    data = check_attivi.pop(last_id)
+
+    nomi = list(data["nomi"].values())
+    if not nomi:
+        testo = "Nessuno ha premuto PRESENTE. 😢"
+    else:
+        testo = "\n".join([f"**{i+1}.** {nome}" for i, nome in enumerate(nomi)])
+
+    embed = discord.Embed(
+        title="🛑 CHECK FINITO - CASTREZZATO RP GOVERNO 3",
+        description=f"**Totale presenti: {len(nomi)}**\n\n{testo}",
+        color=discord.Color.green()
+    )
+    embed.set_footer(text="Castrezzato RP | Governo 3")
+
+    await interaction.response.send_message("✅ Check fermato! Ecco la lista:", ephemeral=True)
+    await interaction.channel.send(embed=embed)
+
+# ================= SYNC MANUALE =================
+@bot.tree.command(name="sync", description="Sincronizza i comandi (solo Zayan)")
+@app_commands.describe(password="Password personalizzata di Zayan")
+async def sync_cmd(interaction: discord.Interaction, password: str):
+    if password != CHECK_PASSWORD:
+        await interaction.response.send_message("❌ Password errata!", ephemeral=True)
+        return
+    synced = await bot.tree.sync()
+    await interaction.response.send_message(f"✅ Sincronizzati {len(synced)} comandi!", ephemeral=True)
+
+# ================= RUN =================
+if __name__ == "__main__":
+    if not TOKEN:
+        print("❌ ERRORE: Metti DISCORD_TOKEN nelle variabili d'ambiente!")
+    else:
+        bot.run(TOKEN)
